@@ -1,14 +1,12 @@
 
 # korea_market_dashboard_bokapi.py
-# Streamlit app: KOSPI, USD/KRW, US Fed Funds Rate, BOK Base Rate (via ECOS Open API)
-# Requirements: streamlit, yfinance, pandas, pandas_datareader, matplotlib, requests, python-dateutil
-# Run: streamlit run korea_market_dashboard_bokapi.py
+# Streamlit app: KOSPI, USD/KRW, US Fed Funds Rate (via FRED CSV), BOK Base Rate (via ECOS API)
+# No pandas_datareader or distutils dependency.
 
 import datetime as dt
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
-from pandas_datareader import data as pdr
 import matplotlib.pyplot as plt
 import streamlit as st
 import requests
@@ -16,7 +14,7 @@ import requests
 st.set_page_config(page_title="Korea Market Dashboard (BOK API)", layout="wide")
 
 st.title("📊 Korea Market Dashboard — BOK Base Rate (ECOS API)")
-st.caption("KOSPI, USD/KRW, U.S. Fed Funds Rate, and the official **Bank of Korea Base Rate** via ECOS Open API.")
+st.caption("KOSPI, USD/KRW, U.S. Fed Funds Rate (FRED CSV), and the official **Bank of Korea Base Rate** (ECOS API).")
 
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -35,30 +33,42 @@ def fetch_yf(symbol, start):
     if df.empty:
         return pd.Series(dtype=float, name=symbol)
     col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
-    s = df[col].copy()
-    s.name = symbol
+    s = df[col].copy(); s.name = symbol
     return s
 
-@st.cache_data(show_spinner=True)
-def fetch_fred(series_id, start):
-    end = dt.date.today()
-    try:
-        s = pdr.DataReader(series_id, 'fred', start, end).iloc[:, 0]
-        s.name = series_id
-        return s
-    except Exception:
+
+import io
+import pandas as pd
+import requests
+import datetime as dt
+
+def fetch_fred_csv(series_id: str, start: dt.date) -> pd.Series:
+    """
+    Fetch a FRED series via the public fredgraph CSV export (no API key).
+    Example URL: https://fred.stlouisfed.org/graph/fredgraph.csv?id=EFFR
+    Returns a daily Series indexed by datetime, name = series_id.
+    """
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    df = pd.read_csv(io.StringIO(r.text))
+    # Expect columns: DATE, {series_id}
+    if 'DATE' not in df.columns or series_id not in df.columns:
         return pd.Series(dtype=float, name=series_id)
+    df['DATE'] = pd.to_datetime(df['DATE'])
+    s = pd.Series(df[series_id].values, index=df['DATE'], name=series_id)
+    # coerce '.' or non-numeric to NaN
+    s = pd.to_numeric(s, errors='coerce')
+    # filter by start
+    s = s[s.index.date >= start]
+    return s
+
 
 def yyyymm(d: dt.date) -> str:
     return f"{d.year}{d.month:02d}"
 
 @st.cache_data(show_spinner=True)
 def fetch_bok_base_rate(api_key: str, start: dt.date):
-    """
-    ECOS StatisticSearch example:
-      https://ecos.bok.or.kr/api/StatisticSearch/{API_KEY}/json/kr/1/100000/722Y001/M/{YYYYMM}/{YYYYMM}/0101000
-    722Y001: 기준금리 및 여수신금리, 0101000: 한국은행 기준금리, 주기: M(월)
-    """
     name = "BOK Base Rate (%)"
     if not api_key:
         return pd.Series(dtype=float, name=name)
@@ -73,7 +83,6 @@ def fetch_bok_base_rate(api_key: str, start: dt.date):
         r = requests.get(url, timeout=20)
         r.raise_for_status()
         data = r.json()
-        # Parse safely
         container = data.get("StatisticSearch") or data.get("statisticSearch") or data.get("Statisticsearch")
         rows = (container or {}).get("row", [])
         times, vals = [], []
@@ -84,6 +93,7 @@ def fetch_bok_base_rate(api_key: str, start: dt.date):
                 continue
             try:
                 y = int(str(t)[:4]); m = int(str(t)[4:6])
+                # month end
                 dt_idx = dt.date(y, m, 1) + relativedelta(months=1) - relativedelta(days=1)
                 times.append(dt_idx)
                 vals.append(float(v))
@@ -99,13 +109,12 @@ def fetch_bok_base_rate(api_key: str, start: dt.date):
 # Symbols
 KOSPI = "^KS11"
 USDKRW = "KRW=X"
-FEDFUNDS = "EFFR"  # Effective Federal Funds Rate (daily)
+EFFR_ID = "EFFR"  # Fed Funds
 
-# Fetch
 st.write("Fetching data...")
 kospi = fetch_yf(KOSPI, start_date)
 usdk_rw = fetch_yf(USDKRW, start_date)
-fedfunds = fetch_fred(FEDFUNDS, start_date)
+effr = fetch_fred_csv(EFFR_ID, start_date)
 bok_base = fetch_bok_base_rate(ecos_api_key, start_date)
 
 # Build daily frame
@@ -115,8 +124,8 @@ if not kospi.empty:
     df['KOSPI'] = kospi.reindex(idx).ffill()
 if not usdk_rw.empty:
     df['USD/KRW'] = usdk_rw.reindex(idx).ffill()
-if not fedfunds.empty:
-    df['US Fed Funds (%)'] = fedfunds.reindex(idx).ffill()
+if not effr.empty:
+    df['US Fed Funds (%)'] = effr.reindex(idx).ffill()
 if not bok_base.empty:
     df['BOK Base Rate (%)'] = bok_base.reindex(idx).ffill()
 
@@ -156,7 +165,7 @@ with st.expander("ℹ️ Notes & Data Sources"):
     st.markdown("""
 - **KOSPI**: Yahoo Finance `^KS11`
 - **USD/KRW**: Yahoo Finance `KRW=X`
-- **U.S. Fed Funds Rate**: FRED `EFFR` (Effective Federal Funds Rate, daily)
+- **U.S. Fed Funds Rate**: FRED CSV export (`fredgraph.csv?id=EFFR`)
 - **BOK Base Rate**: ECOS Open API `StatisticSearch` (Table `722Y001`, Item `0101000`, Frequency `M`)
 - 월별 지표는 그래프 편의를 위해 일 단위로 forward-fill합니다.
 - Normalize ON: 시작일 값을 100으로 환산해 비교합니다.
