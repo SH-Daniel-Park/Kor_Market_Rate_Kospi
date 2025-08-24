@@ -60,7 +60,7 @@ def fetch_fred_csv(series_id: str, start: dt.date) -> pd.Series:
     # coerce '.' or non-numeric to NaN
     s = pd.to_numeric(s, errors='coerce')
     # filter by start
-    s = s[s.index.date >= start]
+    # Do not filter by start here; we will reindex & forward-fill on the plotting range.
     return s
 
 
