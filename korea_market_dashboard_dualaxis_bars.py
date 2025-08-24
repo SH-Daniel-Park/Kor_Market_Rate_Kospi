@@ -1,9 +1,9 @@
 
-# korea_market_dashboard_dualaxis_bars_custom.py
-# Streamlit app: Dual-axis — Left lines (KOSPI, USD/KRW), Right BARS (US Fed Funds, BOK Base Rate)
-# Customizable bar thickness/spacing, value labels, and fixed right-axis range.
-# Distutils-free (no pandas_datareader). Robust FRED loader with API/CSV fallback.
-# Run: streamlit run korea_market_dashboard_dualaxis_bars_custom.py
+# korea_market_dashboard_dualaxis_bars_custom_colors.py
+# Streamlit app: Dual-axis — Left lines (KOSPI black, USD/KRW yellow), Right BARS (US Fed Funds green, BOK Base Rate blue)
+# Adds a "Download chart as PNG" button.
+# Distutils-free. Robust FRED loader (API/CSV fallback) + ECOS API.
+# Run: streamlit run korea_market_dashboard_dualaxis_bars_custom_colors.py
 
 import io
 import math
@@ -17,10 +17,10 @@ from matplotlib.dates import date2num
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Korea Market Dashboard (Bars w/ Controls)", layout="wide")
+st.set_page_config(page_title="Korea Market Dashboard (Bars w/ Colors + Download)", layout="wide")
 
-st.title("📊 Korea Market Dashboard — Bars for U.S. & Korea Rates (Customizable)")
-st.caption("Left axis: KOSPI & USD/KRW (lines). Right axis: U.S. Fed Funds & BOK Base Rate (BARS, percent with 1% ticks).")
+st.title("📊 Korea Market Dashboard — Colored Bars & Download")
+st.caption("Left: KOSPI **black**, USD/KRW **yellow** (lines). Right: U.S. Fed Funds **green**, BOK Base Rate **blue** (bars). 1% ticks on right axis.")
 
 # ----------------------
 # Sidebar
@@ -238,26 +238,38 @@ else:
     left_ylabel = "Level"
 
 # ----------------------
-# Plot
+# Plot (with fixed colors)
 # ----------------------
 fig, ax_left = plt.subplots(figsize=(12, 6), dpi=150)
 
-# Left axis lines
+# Color mapping
+line_colors = {
+    'KOSPI': 'black',
+    'USD/KRW': 'yellow',
+}
+bar_colors = {
+    'US Fed Funds (%)': 'green',   # 미국 금리 = 초록색
+    'BOK Base Rate (%)': 'blue',   # 한국 금리 = 파란색
+}
+
+# Left axis lines (specific colors)
 if not left_df.empty:
-    left_df.plot(ax=ax_left)
+    cols = list(left_df.columns)
+    colors = [line_colors.get(c, None) for c in cols]
+    left_df.plot(ax=ax_left, color=colors, linewidth=1.8)
 
 ax_left.set_xlabel("Date")
 ax_left.set_ylabel(left_ylabel)
 ax_left.grid(True, alpha=0.3)
 ax_left.set_title(f"From {start_date} to {dt.date.today()}")
 
-# Right axis bars for rates
+# Right axis bars for rates (specific colors)
 ax_right = ax_left.twinx()
 
 def draw_grouped_bars(ax, bar_df, width_days, gap_fraction, show_value_labels, decimals):
     """
     Draw grouped bars centered at each date with specified width and gap.
-    gap_fraction: fraction (0~0.6) of width reserved as empty space between groups.
+    Colors are assigned by bar_colors mapping above.
     """
     if bar_df.empty:
         return []
@@ -266,9 +278,11 @@ def draw_grouped_bars(ax, bar_df, width_days, gap_fraction, show_value_labels, d
     total_span = width_days * (1.0 - gap_fraction)  # width used by bars
     bar_w = total_span / max(n,1)
     containers = []
-    for i in range(n):
+    for i, col in enumerate(bar_df.columns):
         offset = (-total_span/2.0) + (i + 0.5) * bar_w
-        cont = ax.bar(x + offset, bar_df.iloc[:, i].values, width=bar_w, align='center', alpha=0.85, label=bar_df.columns[i])
+        color = bar_colors.get(col, None)
+        cont = ax.bar(x + offset, bar_df.iloc[:, i].values, width=bar_w, align='center', alpha=0.9,
+                      label=col, color=color, edgecolor='none')
         containers.append(cont)
         if show_value_labels:
             for rect, val in zip(cont.patches, bar_df.iloc[:, i].values):
@@ -279,7 +293,7 @@ def draw_grouped_bars(ax, bar_df, width_days, gap_fraction, show_value_labels, d
                             xy=(rect.get_x() + rect.get_width()/2, rect.get_y() + height),
                             xytext=(0, 3),
                             textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, rotation=0)
+                            ha='center', va='bottom', fontsize=8, rotation=0, color=color if color!='yellow' else 'black')
     return containers
 
 if rates_cols:
@@ -315,7 +329,20 @@ if rates_cols:
 else:
     ax_right.set_ylabel("Rate (%) — 1% steps (no rate series loaded)")
 
+# Render figure
 st.pyplot(fig, clear_figure=True)
+
+# Download button (PNG)
+buf = io.BytesIO()
+fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+buf.seek(0)
+today_str = dt.date.today().strftime("%Y%m%d")
+st.download_button(
+    label="📥 Download chart as PNG",
+    data=buf.getvalue(),
+    file_name=f"market_dashboard_{today_str}.png",
+    mime="image/png"
+)
 
 # Status captions
 try:
@@ -336,10 +363,9 @@ if show_table:
 
 with st.expander("ℹ️ Notes & Data Sources"):
     st.markdown("""
-- **Left axis**: KOSPI (`^KS11`), USD/KRW (`KRW=X`) — lines, optionally normalized to 100 at start.
-- **Right axis**: U.S. Fed Funds & **BOK Base Rate** — **BARS** in percent with **1% tick steps**.
-- **Bar controls**: width (days), gap between bars, value labels (w/ decimals), and fixed right-y range.
+- **Colors**: KOSPI = black, USD/KRW = yellow, **US Fed Funds = green**, **BOK Base Rate = blue**.
+- Left axis (lines): optionally normalized to 100 at start; Right axis (bars): 1% ticks and % labels.
 - FRED: EFFR daily (fallback to FEDFUNDS monthly). ECOS: 722Y001 · 0101000 (monthly).
 """)
 
-st.success("Custom bar chart ready. Adjust width/gap/labels and right-axis range from the sidebar.")
+st.success("Done. Colors applied & PNG download available.")
