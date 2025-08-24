@@ -1,8 +1,9 @@
 
-# korea_market_dashboard_dualaxis_bars.py
-# Streamlit app: Dual-axis plot — Left lines (KOSPI, USD/KRW), Right BARS (US Fed Funds, BOK Base Rate)
+# korea_market_dashboard_dualaxis_bars_custom.py
+# Streamlit app: Dual-axis — Left lines (KOSPI, USD/KRW), Right BARS (US Fed Funds, BOK Base Rate)
+# Customizable bar thickness/spacing, value labels, and fixed right-axis range.
 # Distutils-free (no pandas_datareader). Robust FRED loader with API/CSV fallback.
-# Run: streamlit run korea_market_dashboard_dualaxis_bars.py
+# Run: streamlit run korea_market_dashboard_dualaxis_bars_custom.py
 
 import io
 import math
@@ -16,9 +17,9 @@ from matplotlib.dates import date2num
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Korea Market Dashboard (Bars for Rates)", layout="wide")
+st.set_page_config(page_title="Korea Market Dashboard (Bars w/ Controls)", layout="wide")
 
-st.title("📊 Korea Market Dashboard — Bars for U.S. & Korea Rates")
+st.title("📊 Korea Market Dashboard — Bars for U.S. & Korea Rates (Customizable)")
 st.caption("Left axis: KOSPI & USD/KRW (lines). Right axis: U.S. Fed Funds & BOK Base Rate (BARS, percent with 1% ticks).")
 
 # ----------------------
@@ -30,6 +31,16 @@ with st.sidebar:
                                min_value=dt.date(1990,1,1), max_value=dt.date.today())
     normalize_left = st.checkbox("Normalize KOSPI / USDKRW to 100 at start", value=True)
     bar_freq = st.selectbox("Bar frequency for rates", ["Monthly (recommended)", "Daily"])
+    st.subheader("Bar appearance")
+    monthly_bar_days = st.slider("Monthly bar width (days)", 5, 28, 18)
+    daily_bar_days = st.slider("Daily bar width (days)", 1, 5, 1)
+    group_gap = st.slider("Gap between rate bars (0.00–0.60)", 0.00, 0.60, 0.20, step=0.05)
+    show_labels = st.checkbox("Show value labels on bars", value=True)
+    label_decimals = st.selectbox("Label decimals", [0,1,2], index=1)
+    st.subheader("Right axis range")
+    fix_range = st.checkbox("Fix right y-axis range", value=False)
+    min_pct = st.number_input("Right y min (%)", value=0.0, step=0.5, disabled=not fix_range)
+    max_pct = st.number_input("Right y max (%)", value=10.0, step=0.5, disabled=not fix_range)
     show_table = st.checkbox("Show data table (last 30 days)", value=False)
     st.divider()
     st.subheader("🔑 ECOS (BOK) API")
@@ -243,49 +254,64 @@ ax_left.set_title(f"From {start_date} to {dt.date.today()}")
 # Right axis bars for rates
 ax_right = ax_left.twinx()
 
+def draw_grouped_bars(ax, bar_df, width_days, gap_fraction, show_value_labels, decimals):
+    """
+    Draw grouped bars centered at each date with specified width and gap.
+    gap_fraction: fraction (0~0.6) of width reserved as empty space between groups.
+    """
+    if bar_df.empty:
+        return []
+    x = date2num(bar_df.index.to_pydatetime())
+    n = len(bar_df.columns)
+    total_span = width_days * (1.0 - gap_fraction)  # width used by bars
+    bar_w = total_span / max(n,1)
+    containers = []
+    for i in range(n):
+        offset = (-total_span/2.0) + (i + 0.5) * bar_w
+        cont = ax.bar(x + offset, bar_df.iloc[:, i].values, width=bar_w, align='center', alpha=0.85, label=bar_df.columns[i])
+        containers.append(cont)
+        if show_value_labels:
+            for rect, val in zip(cont.patches, bar_df.iloc[:, i].values):
+                if pd.isna(val):
+                    continue
+                height = rect.get_height()
+                ax.annotate(f"{val:.{decimals}f}%",
+                            xy=(rect.get_x() + rect.get_width()/2, rect.get_y() + height),
+                            xytext=(0, 3),
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontsize=8, rotation=0)
+    return containers
+
 if rates_cols:
     right_df = df[rates_cols].copy()
     if bar_freq.startswith("Monthly"):
-        # Resample to month-end, take last value
         bar_df = right_df.resample('M').last()
-        bar_width = 20  # days
+        width = float(monthly_bar_days)
     else:
         bar_df = right_df
-        bar_width = 0.8  # days
+        width = float(daily_bar_days)
+    containers = draw_grouped_bars(ax_right, bar_df, width_days=width, gap_fraction=group_gap,
+                                   show_value_labels=show_labels, decimals=label_decimals)
 
-    x = date2num(bar_df.index.to_pydatetime())
-    n_series = len(bar_df.columns)
-    if n_series == 1:
-        ax_right.bar(x, bar_df.iloc[:,0].values, width=bar_width, align='center', alpha=0.8)
+    # Right axis ticks and range
+    if fix_range:
+        ax_right.set_ylim(min_pct, max_pct)
     else:
-        # grouped bars with slight offsets
-        offsets = [(-0.25, 0.25)] if n_series == 2 else [(-0.3, 0.0, 0.3)]
-        if n_series == 2:
-            for i, off in enumerate(offsets[0]):
-                ax_right.bar(x + off*bar_width, bar_df.iloc[:,i].values, width=bar_width*0.45, align='center', alpha=0.8, label=bar_df.columns[i])
-        else:
-            # general case
-            step = 0.6 / n_series
-            start_off = -0.3
-            for i in range(n_series):
-                off = start_off + i*step
-                ax_right.bar(x + off*bar_width, bar_df.iloc[:,i].values, width=bar_width*step, align='center', alpha=0.8, label=bar_df.columns[i])
-        # Ensure legend includes bar labels
-        h1, l1 = ax_left.get_legend_handles_labels()
-        h2, l2 = ax_right.get_legend_handles_labels()
-        ax_left.legend(h1+h2, l1+l2, loc='best')
-    # 1% tick steps & percent labels
-    try:
-        rmin = math.floor(float(bar_df.min().min()))
-        rmax = math.ceil(float(bar_df.max().max()))
-        if rmin == rmax:
-            rmax = rmin + 1
-        ax_right.set_ylim(rmin-0.1, rmax+0.1)
-    except Exception:
-        pass
+        try:
+            rmin = math.floor(float(bar_df.min().min()))
+            rmax = math.ceil(float(bar_df.max().max()))
+            if rmin == rmax:
+                rmax = rmin + 1
+            ax_right.set_ylim(rmin-0.1, rmax+0.1)
+        except Exception:
+            pass
     ax_right.yaxis.set_major_locator(MultipleLocator(1.0))
     ax_right.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{int(y)}%"))
     ax_right.set_ylabel("Rate (%) — 1% steps (bars)")
+    # Merge legends
+    h1, l1 = ax_left.get_legend_handles_labels()
+    h2, l2 = ax_right.get_legend_handles_labels()
+    ax_left.legend(h1 + h2, l1 + l2, loc='best')
 else:
     ax_right.set_ylabel("Rate (%) — 1% steps (no rate series loaded)")
 
@@ -298,7 +324,7 @@ try:
         last_obs_str = last_obs.strftime("%Y-%m-%d") if last_obs is not None else "N/A"
         st.caption(f"U.S. Fed Funds source: **{fed_src}**, last observation: **{last_obs_str}**")
     elif fed_src == 'unavailable':
-        st.warning('U.S. Fed Funds를 불러오지 못했습니다. 네트워크 정책 또는 FRED 차단 이슈일 수 있습니다. 사이드바에 **FRED API Key**를 넣고 다시 시도하세요.')
+        st.warning('U.S. Fed Funds를 불러오지 못했습니다. 네트워크 또는 FRED 차단 이슈일 수 있습니다. 사이드바에 **FRED API Key**를 넣고 다시 시도하세요.')
 except Exception:
     pass
 
@@ -312,7 +338,8 @@ with st.expander("ℹ️ Notes & Data Sources"):
     st.markdown("""
 - **Left axis**: KOSPI (`^KS11`), USD/KRW (`KRW=X`) — lines, optionally normalized to 100 at start.
 - **Right axis**: U.S. Fed Funds & **BOK Base Rate** — **BARS** in percent with **1% tick steps**.
-- Bar frequency can be switched (Monthly/Daily) from the sidebar.
+- **Bar controls**: width (days), gap between bars, value labels (w/ decimals), and fixed right-y range.
+- FRED: EFFR daily (fallback to FEDFUNDS monthly). ECOS: 722Y001 · 0101000 (monthly).
 """)
 
-st.success("Dual-axis with BAR rates ready. Try switching Monthly/Daily bar frequency in the sidebar.")
+st.success("Custom bar chart ready. Adjust width/gap/labels and right-axis range from the sidebar.")
