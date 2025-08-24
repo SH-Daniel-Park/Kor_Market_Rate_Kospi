@@ -1,9 +1,9 @@
 
-# korea_market_dashboard_dualaxis_bars_custom_colors.py
-# Streamlit app: Dual-axis — Left lines (KOSPI black, USD/KRW yellow), Right BARS (US Fed Funds green, BOK Base Rate blue)
-# Adds a "Download chart as PNG" button.
-# Distutils-free. Robust FRED loader (API/CSV fallback) + ECOS API.
-# Run: streamlit run korea_market_dashboard_dualaxis_bars_custom_colors.py
+# korea_market_dashboard_dashed_rates_labels_excel.py
+# Streamlit app: Left lines (KOSPI black, USD/KRW yellow), Right dashed lines (US Fed Funds red, BOK Base Rate blue)
+# Adds: top-left single-line data labels on the chart, Excel download (yyyy-mm-dd), PNG download.
+# Robust FRED loader (API/CSV fallback) + ECOS API. Distutils-free.
+# Run: streamlit run korea_market_dashboard_dashed_rates_labels_excel.py
 
 import io
 import math
@@ -13,14 +13,14 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, FuncFormatter
-from matplotlib.dates import date2num
+from matplotlib.dates import DateFormatter
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Korea Market Dashboard (Bars w/ Colors + Download)", layout="wide")
+st.set_page_config(page_title="Korea Market Dashboard (Dashed + Labels + Excel)", layout="wide")
 
-st.title("📊 Korea Market Dashboard — Colored Bars & Download")
-st.caption("Left: KOSPI **black**, USD/KRW **yellow** (lines). Right: U.S. Fed Funds **green**, BOK Base Rate **blue** (bars). 1% ticks on right axis.")
+st.title("📊 Korea Market Dashboard — Dashed Rates + Labels + Excel")
+st.caption("Left: KOSPI **black**, USD/KRW **yellow**. Right: U.S. Fed Funds **red dashed**, BOK Base Rate **blue dashed**. Right axis uses 1% ticks.")
 
 # ----------------------
 # Sidebar
@@ -30,17 +30,6 @@ with st.sidebar:
     start_date = st.date_input("Start date (YYYY-MM-DD)", value=dt.date(2020, 1, 1),
                                min_value=dt.date(1990,1,1), max_value=dt.date.today())
     normalize_left = st.checkbox("Normalize KOSPI / USDKRW to 100 at start", value=True)
-    bar_freq = st.selectbox("Bar frequency for rates", ["Monthly (recommended)", "Daily"])
-    st.subheader("Bar appearance")
-    monthly_bar_days = st.slider("Monthly bar width (days)", 5, 28, 18)
-    daily_bar_days = st.slider("Daily bar width (days)", 1, 5, 1)
-    group_gap = st.slider("Gap between rate bars (0.00–0.60)", 0.00, 0.60, 0.20, step=0.05)
-    show_labels = st.checkbox("Show value labels on bars", value=True)
-    label_decimals = st.selectbox("Label decimals", [0,1,2], index=1)
-    st.subheader("Right axis range")
-    fix_range = st.checkbox("Fix right y-axis range", value=False)
-    min_pct = st.number_input("Right y min (%)", value=0.0, step=0.5, disabled=not fix_range)
-    max_pct = st.number_input("Right y max (%)", value=10.0, step=0.5, disabled=not fix_range)
     show_table = st.checkbox("Show data table (last 30 days)", value=False)
     st.divider()
     st.subheader("🔑 ECOS (BOK) API")
@@ -72,6 +61,7 @@ def fetch_fred_csv(series_id: str) -> pd.Series:
     Fetch a FRED series via fredgraph CSV export (no API key).
     Returns a Series named `series_id` indexed by datetime.
     """
+    import io
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
         r = requests.get(url, timeout=30, headers={"User-Agent":"Mozilla/5.0"})
@@ -214,7 +204,7 @@ if not kospi.empty:
 if not usdk_rw.empty:
     df['USD/KRW'] = usdk_rw.reindex(idx).ffill()
 
-# Rates daily series (for table and for daily bars option)
+# Rates daily series (for right dashed lines)
 rates_cols = []
 if not effr_raw.empty:
     effr = effr_raw.reindex(idx).ffill().bfill()
@@ -238,111 +228,120 @@ else:
     left_ylabel = "Level"
 
 # ----------------------
-# Plot (with fixed colors)
+# Plot (fixed colors + dashed rates + top-left labels)
 # ----------------------
 fig, ax_left = plt.subplots(figsize=(12, 6), dpi=150)
+fig.subplots_adjust(top=0.85)  # room for top labels
 
-# Color mapping
-line_colors = {
-    'KOSPI': 'black',
-    'USD/KRW': 'yellow',
-}
-bar_colors = {
-    'US Fed Funds (%)': 'green',   # 미국 금리 = 초록색
-    'BOK Base Rate (%)': 'blue',   # 한국 금리 = 파란색
-}
-
-# Left axis lines (specific colors)
+# Left: specified colors
+line_colors = {'KOSPI': 'black', 'USD/KRW': 'yellow'}
 if not left_df.empty:
     cols = list(left_df.columns)
     colors = [line_colors.get(c, None) for c in cols]
     left_df.plot(ax=ax_left, color=colors, linewidth=1.8)
 
+# Right: dashed rate lines
+ax_right = ax_left.twinx()
+if rates_cols:
+    if 'US Fed Funds (%)' in df.columns:
+        ax_right.plot(df.index, df['US Fed Funds (%)'], linestyle='--', color='red', linewidth=2.0, label='US Fed Funds (%)')
+    if 'BOK Base Rate (%)' in df.columns:
+        ax_right.plot(df.index, df['BOK Base Rate (%)'], linestyle='--', color='blue', linewidth=2.0, label='BOK Base Rate (%)')
+    try:
+        rmin = math.floor(float(df[rates_cols].min().min()))
+        rmax = math.ceil(float(df[rates_cols].max().max()))
+        if rmin == rmax:
+            rmax = rmin + 1
+        ax_right.set_ylim(rmin-0.1, rmax+0.1)
+    except Exception:
+        pass
+    ax_right.yaxis.set_major_locator(MultipleLocator(1.0))
+    ax_right.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{int(y)}%"))
+    ax_right.set_ylabel("Rate (%) — 1% steps (dashed)")
+
+# Axis labels, grid, and date format
 ax_left.set_xlabel("Date")
 ax_left.set_ylabel(left_ylabel)
 ax_left.grid(True, alpha=0.3)
 ax_left.set_title(f"From {start_date} to {dt.date.today()}")
+ax_left.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+for label in ax_left.get_xticklabels():
+    label.set_rotation(0)
+    label.set_ha('center')
 
-# Right axis bars for rates (specific colors)
-ax_right = ax_left.twinx()
+# ----------------------
+# Top-left single-line data labels (yyyy-mm-dd)
+# ----------------------
+def fmt(v, is_rate=False):
+    if pd.isna(v):
+        return "NA"
+    return f"{v:,.2f}%" if is_rate else f"{v:,.2f}"
 
-def draw_grouped_bars(ax, bar_df, width_days, gap_fraction, show_value_labels, decimals):
-    """
-    Draw grouped bars centered at each date with specified width and gap.
-    Colors are assigned by bar_colors mapping above.
-    """
-    if bar_df.empty:
-        return []
-    x = date2num(bar_df.index.to_pydatetime())
-    n = len(bar_df.columns)
-    total_span = width_days * (1.0 - gap_fraction)  # width used by bars
-    bar_w = total_span / max(n,1)
-    containers = []
-    for i, col in enumerate(bar_df.columns):
-        offset = (-total_span/2.0) + (i + 0.5) * bar_w
-        color = bar_colors.get(col, None)
-        cont = ax.bar(x + offset, bar_df.iloc[:, i].values, width=bar_w, align='center', alpha=0.9,
-                      label=col, color=color, edgecolor='none')
-        containers.append(cont)
-        if show_value_labels:
-            for rect, val in zip(cont.patches, bar_df.iloc[:, i].values):
-                if pd.isna(val):
-                    continue
-                height = rect.get_height()
-                ax.annotate(f"{val:.{decimals}f}%",
-                            xy=(rect.get_x() + rect.get_width()/2, rect.get_y() + height),
-                            xytext=(0, 3),
-                            textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8, rotation=0, color=color if color!='yellow' else 'black')
-    return containers
+last_vals = []
+if 'KOSPI' in df.columns:
+    last_vals.append(f"KOSPI: {fmt(df['KOSPI'].dropna().iloc[-1] if not df['KOSPI'].dropna().empty else float('nan'))}")
+if 'USD/KRW' in df.columns:
+    last_vals.append(f"USD/KRW: {fmt(df['USD/KRW'].dropna().iloc[-1] if not df['USD/KRW'].dropna().empty else float('nan'))}")
+if 'US Fed Funds (%)' in df.columns:
+    last_vals.append(f"US Fed Funds: {fmt(df['US Fed Funds (%)'].dropna().iloc[-1] if not df['US Fed Funds (%)'].dropna().empty else float('nan'), True)}")
+if 'BOK Base Rate (%)' in df.columns:
+    last_vals.append(f"BOK Base Rate: {fmt(df['BOK Base Rate (%)'].dropna().iloc[-1] if not df['BOK Base Rate (%)'].dropna().empty else float('nan'), True)}")
 
-if rates_cols:
-    right_df = df[rates_cols].copy()
-    if bar_freq.startswith("Monthly"):
-        bar_df = right_df.resample('M').last()
-        width = float(monthly_bar_days)
-    else:
-        bar_df = right_df
-        width = float(daily_bar_days)
-    containers = draw_grouped_bars(ax_right, bar_df, width_days=width, gap_fraction=group_gap,
-                                   show_value_labels=show_labels, decimals=label_decimals)
+label_line = " | ".join(last_vals)
+# Put a white-rounded box at top-left, left-aligned on a single line
+ax_left.text(0.01, 1.05, label_line, transform=ax_left.transAxes, ha='left', va='bottom',
+             fontsize=10, bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
 
-    # Right axis ticks and range
-    if fix_range:
-        ax_right.set_ylim(min_pct, max_pct)
-    else:
-        try:
-            rmin = math.floor(float(bar_df.min().min()))
-            rmax = math.ceil(float(bar_df.max().max()))
-            if rmin == rmax:
-                rmax = rmin + 1
-            ax_right.set_ylim(rmin-0.1, rmax+0.1)
-        except Exception:
-            pass
-    ax_right.yaxis.set_major_locator(MultipleLocator(1.0))
-    ax_right.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{int(y)}%"))
-    ax_right.set_ylabel("Rate (%) — 1% steps (bars)")
-    # Merge legends
-    h1, l1 = ax_left.get_legend_handles_labels()
-    h2, l2 = ax_right.get_legend_handles_labels()
+# Legend
+h1, l1 = ax_left.get_legend_handles_labels()
+h2, l2 = ax_right.get_legend_handles_labels()
+if h1 or h2:
     ax_left.legend(h1 + h2, l1 + l2, loc='best')
-else:
-    ax_right.set_ylabel("Rate (%) — 1% steps (no rate series loaded)")
 
-# Render figure
+# Render plot
 st.pyplot(fig, clear_figure=True)
 
-# Download button (PNG)
-buf = io.BytesIO()
-fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-buf.seek(0)
-today_str = dt.date.today().strftime("%Y%m%d")
+# ----------------------
+# Downloads (PNG + Excel with yyyy-mm-dd dates)
+# ----------------------
+# PNG
+buf_png = io.BytesIO()
+fig.savefig(buf_png, format="png", dpi=150, bbox_inches="tight")
+buf_png.seek(0)
+today_str = dt.date.today().strftime("%Y-%m-%d")
+
 st.download_button(
     label="📥 Download chart as PNG",
-    data=buf.getvalue(),
+    data=buf_png.getvalue(),
     file_name=f"market_dashboard_{today_str}.png",
     mime="image/png"
 )
+
+# Excel (dates as yyyy-mm-dd)
+df_out = df.copy()
+df_out.index.name = "Date"
+df_xlsx = df_out.reset_index()
+df_xlsx["Date"] = df_xlsx["Date"].dt.strftime("%Y-%m-%d")
+
+buf_xlsx = io.BytesIO()
+with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
+    df_xlsx.to_excel(writer, index=False, sheet_name="Data")
+buf_xlsx.seek(0)
+
+st.download_button(
+    label="📒 Download data as Excel (yyyy-mm-dd)",
+    data=buf_xlsx.getvalue(),
+    file_name=f"market_dashboard_{today_str}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# ----------------------
+# Table (last 30 days, yyyy-mm-dd index)
+# ----------------------
+if show_table:
+    df_show = df.tail(30).copy()
+    df_show.index = df_show.index.strftime("%Y-%m-%d")
+    st.dataframe(df_show, use_container_width=True)
 
 # Status captions
 try:
@@ -354,18 +353,3 @@ try:
         st.warning('U.S. Fed Funds를 불러오지 못했습니다. 네트워크 또는 FRED 차단 이슈일 수 있습니다. 사이드바에 **FRED API Key**를 넣고 다시 시도하세요.')
 except Exception:
     pass
-
-# ----------------------
-# Table (last 30 days)
-# ----------------------
-if show_table:
-    st.dataframe(df.tail(30), use_container_width=True)
-
-with st.expander("ℹ️ Notes & Data Sources"):
-    st.markdown("""
-- **Colors**: KOSPI = black, USD/KRW = yellow, **US Fed Funds = green**, **BOK Base Rate = blue**.
-- Left axis (lines): optionally normalized to 100 at start; Right axis (bars): 1% ticks and % labels.
-- FRED: EFFR daily (fallback to FEDFUNDS monthly). ECOS: 722Y001 · 0101000 (monthly).
-""")
-
-st.success("Done. Colors applied & PNG download available.")

@@ -4,3 +4,4 @@ pandas
 matplotlib
 requests
 python-dateutil
+openpyxl
